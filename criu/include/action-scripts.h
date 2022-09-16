@@ -19,6 +19,7 @@ enum script_actions {
 	ACT_ORPHAN_PTS_MASTER,
 	ACT_STATUS_READY,
 	ACT_QUERY_EXT_FILES,
+	ACT_REQUEST_MAP_FILE,
 
 	ACT_MAX
 };
@@ -29,6 +30,7 @@ extern int run_scripts(enum script_actions);
 extern int rpc_send_fd(enum script_actions, int fd);
 extern int rpc_query_external_files(void);
 extern int exec_rpc_query_external_files(char *name, int sk);
+extern int rpc_request_map_file(int pid, uint64_t mapping_begin, uint64_t mapping_end, int *fd);
 extern int send_criu_rpc_script_cn(CriuNotify *cn, int sk, int send_fd, int *receive_fd);
 extern int send_criu_rpc_script(enum script_actions act, char *name, int sk, int fd);
 

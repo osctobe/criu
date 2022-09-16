@@ -32,6 +32,7 @@ static const char *action_names[ACT_MAX] = {
 	[ACT_ORPHAN_PTS_MASTER] = "orphan-pts-master",
 	[ACT_STATUS_READY] = "status-ready",
 	[ACT_QUERY_EXT_FILES] = "query-ext-files",
+	[ACT_REQUEST_MAP_FILE] = "request-map-file",
 };
 
 struct script {
@@ -128,6 +129,29 @@ int rpc_query_external_files(void)
 		return -1;
 
 	return exec_rpc_query_external_files((char *)action_names[ACT_QUERY_EXT_FILES], rpc_sk);
+}
+
+int rpc_request_map_file(int pid, uint64_t mapping_begin, uint64_t mapping_end, int *out_fd)
+{
+	CriuNotify cn = CRIU_NOTIFY__INIT;
+	int rpc_sk;
+
+	if (scripts_mode != SCRIPTS_RPC)
+		return -1;
+
+	rpc_sk = get_service_fd(RPC_SK_OFF);
+	if (rpc_sk < 0)
+		return -1;
+
+	pr_debug("\tRPC\n");
+	cn.script = (char *)action_names[ACT_REQUEST_MAP_FILE];
+	cn.has_pid = true;
+	cn.pid = pid;
+	cn.has_mapping_begin = true;
+	cn.mapping_begin = mapping_begin;
+	cn.has_mapping_end = true;
+	cn.mapping_end = mapping_end;
+	return send_criu_rpc_script_cn(&cn, rpc_sk, -1, out_fd);
 }
 
 int run_scripts(enum script_actions act)

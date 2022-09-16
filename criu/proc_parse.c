@@ -42,6 +42,7 @@
 #include "fault-injection.h"
 #include "memfd.h"
 #include "hugetlb.h"
+#include "action-scripts.h"
 
 #include "protobuf.h"
 #include "images/fdinfo.pb-c.h"
@@ -240,7 +241,8 @@ static int vma_get_mapfile_flags(struct vma_area *vma, DIR *mfd, char *path)
 
 static int vma_stat(struct vma_area *vma, int fd)
 {
-	vma->vmst = xmalloc(sizeof(struct stat));
+	if (!vma->vmst)
+		vma->vmst = xmalloc(sizeof(struct stat));
 	if (!vma->vmst)
 		return -1;
 
@@ -382,7 +384,7 @@ closefd:
 	return -1;
 }
 
-static int vma_open_mapfile(int dir, const char *fname, struct vma_area *vma, struct vma_file_info *vfi, int *vm_file_fd, const char *path)
+static int vma_open_mapfile(pid_t pid, int dir, const char *fname, struct vma_area *vma, struct vma_file_info *vfi, int *vm_file_fd, const char *path)
 {
 	int flags = O_PATH;
 
@@ -427,14 +429,28 @@ static int vma_open_mapfile(int dir, const char *fname, struct vma_area *vma, st
 		return -1;
 	}
 
-	if (errno == EPERM && !opts.aufs)
-		return vma_get_mapfile_user(fname, vma, vfi, vm_file_fd, path);
+	if (errno != EPERM) {
+		pr_perror("Can't open map_files/%s", path);
+		return -1;
+	}
 
-	pr_perror("Can't open map_files");
+	if (!opts.aufs && !vma_get_mapfile_user(fname, vma, vfi, vm_file_fd, path))
+		return 0;
+
+	if (!rpc_request_map_file(pid, vma->e->start, vma->e->end, vm_file_fd)) {
+		pr_info("Got fd %d via RPC for handling %s\n", *vm_file_fd, fname);
+		/*
+		 * vma_get_mapfile_user() might have stat()ed another file --
+		 * overwrite vma->vmst unconditionally to cover this case.
+		 */
+		return vma_stat(vma, *vm_file_fd);
+	}
+
+	pr_err("Can't open map_files/%s (EPERM) and fallbacks didn't help\n", path);
 	return -1;
 }
 
-static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, struct vma_file_info *vfi,
+static int vma_get_mapfile(pid_t pid, const char *fname, struct vma_area *vma, DIR *mfd, struct vma_file_info *vfi,
 			   struct vma_file_info *prev_vfi, int *vm_file_fd)
 {
 	char path[32];
@@ -477,7 +493,7 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
 	 * so later we might refer to it via /proc/self/fd/vm_file_fd
 	 * if needed.
 	 */
-	if (vma_open_mapfile(dirfd(mfd), fname, vma, vfi, vm_file_fd, path))
+	if (vma_open_mapfile(pid, dirfd(mfd), fname, vma, vfi, vm_file_fd, path))
 		return -1;
 	if (*vm_file_fd < 0)
 		return 0;
@@ -564,7 +580,7 @@ static inline int handle_vvar_vma(struct vma_area *vma)
 static int handle_vma(pid_t pid, struct vma_area *vma_area, const char *file_path, DIR *map_files_dir,
 		      struct vma_file_info *vfi, struct vma_file_info *prev_vfi, int *vm_file_fd)
 {
-	if (vma_get_mapfile(file_path, vma_area, map_files_dir, vfi, prev_vfi, vm_file_fd))
+	if (vma_get_mapfile(pid, file_path, vma_area, map_files_dir, vfi, prev_vfi, vm_file_fd))
 		goto err_bogus_mapfile;
 
 	if (vma_area->e->status != 0)
