@@ -382,11 +382,62 @@ closefd:
 	return -1;
 }
 
+static int vma_open_mapfile(int dir, const char *fname, struct vma_area *vma, struct vma_file_info *vfi, int *vm_file_fd, const char *path)
+{
+	int flags = O_PATH;
+
+	if (vfi->dev_maj == 0)
+		/*
+		 * Opening with O_PATH omits calling kernel ->open
+		 * method, thus for some special files their type
+		 * detection might be broken. Thus we open those with
+		 * the O_RDONLY to potentially get ENXIO and check
+		 * it below.
+		 */
+		flags = O_RDONLY;
+
+	*vm_file_fd = openat(dir, path, flags);
+	if (*vm_file_fd >= 0)
+		return 0;
+
+	if (errno == ENOENT)
+		/* Just mapping w/o map_files link */
+		return 0;
+
+	if (errno == ENXIO) {
+		struct stat buf;
+
+		if (fstatat(dir, path, &buf, 0))
+			return -1;
+
+		if (S_ISSOCK(buf.st_mode)) {
+			pr_info("Found socket mapping @%" PRIx64 "\n", vma->e->start);
+			vma->vm_socket_id = buf.st_ino;
+			vma->e->status |= VMA_AREA_SOCKET | VMA_AREA_REGULAR;
+			return 0;
+		}
+
+		if ((buf.st_mode & S_IFMT) == 0 && !strncmp(fname, AIO_FNAME, sizeof(AIO_FNAME) - 1)) {
+			/* AIO ring, let's try */
+			vma->e->status = VMA_AREA_AIORING;
+			return 0;
+		}
+
+		pr_err("Unknown shit %o (%s)\n", buf.st_mode, fname);
+		return -1;
+	}
+
+	if (errno == EPERM && !opts.aufs)
+		return vma_get_mapfile_user(fname, vma, vfi, vm_file_fd, path);
+
+	pr_perror("Can't open map_files");
+	return -1;
+}
+
 static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, struct vma_file_info *vfi,
 			   struct vma_file_info *prev_vfi, int *vm_file_fd)
 {
 	char path[32];
-	int flags;
 
 	/* Figure out if it's file mapping */
 	snprintf(path, sizeof(path), "%" PRIx64 "-%" PRIx64, vma->e->start, vma->e->end);
@@ -426,54 +477,12 @@ static int vma_get_mapfile(const char *fname, struct vma_area *vma, DIR *mfd, st
 	 * so later we might refer to it via /proc/self/fd/vm_file_fd
 	 * if needed.
 	 */
-	flags = O_PATH;
-	if (vfi->dev_maj == 0)
-		/*
-		 * Opening with O_PATH omits calling kernel ->open
-		 * method, thus for some special files their type
-		 * detection might be broken. Thus we open those with
-		 * the O_RDONLY to potentially get ENXIO and check
-		 * it below.
-		 */
-		flags = O_RDONLY;
-
-	*vm_file_fd = openat(dirfd(mfd), path, flags);
-	if (*vm_file_fd < 0) {
-		if (errno == ENOENT)
-			/* Just mapping w/o map_files link */
-			return 0;
-
-		if (errno == ENXIO) {
-			struct stat buf;
-
-			if (fstatat(dirfd(mfd), path, &buf, 0))
-				return -1;
-
-			if (S_ISSOCK(buf.st_mode)) {
-				pr_info("Found socket mapping @%" PRIx64 "\n", vma->e->start);
-				vma->vm_socket_id = buf.st_ino;
-				vma->e->status |= VMA_AREA_SOCKET | VMA_AREA_REGULAR;
-				return 0;
-			}
-
-			if ((buf.st_mode & S_IFMT) == 0 && !strncmp(fname, AIO_FNAME, sizeof(AIO_FNAME) - 1)) {
-				/* AIO ring, let's try */
-				close_safe(vm_file_fd);
-				vma->e->status = VMA_AREA_AIORING;
-				return 0;
-			}
-
-			pr_err("Unknown shit %o (%s)\n", buf.st_mode, fname);
-			return -1;
-		}
-
-		if (errno == EPERM && !opts.aufs)
-			return vma_get_mapfile_user(fname, vma, vfi, vm_file_fd, path);
-
-		pr_perror("Can't open map_files");
+	if (vma_open_mapfile(dirfd(mfd), fname, vma, vfi, vm_file_fd, path))
 		return -1;
-	}
-
+	if (*vm_file_fd < 0)
+		return 0;
+	if (vma->vmst) /* vma_stat() called already */
+		return 0;
 	return vma_stat(vma, *vm_file_fd);
 }
 
