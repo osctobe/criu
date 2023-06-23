@@ -2,6 +2,7 @@
 #define __CR_ACTION_SCRIPTS_H__
 
 #include "asm/int.h"
+#include "images/rpc.pb-c.h"
 
 enum script_actions {
 	ACT_PRE_STREAM,
@@ -28,6 +29,7 @@ extern int run_scripts(enum script_actions);
 extern int rpc_send_fd(enum script_actions, int fd);
 extern int rpc_query_external_files(void);
 extern int exec_rpc_query_external_files(char *name, int sk);
+extern int send_criu_rpc_script_cn(CriuNotify *cn, int sk, int send_fd, int *receive_fd);
 extern int send_criu_rpc_script(enum script_actions act, char *name, int sk, int fd);
 
 #endif /* __CR_ACTION_SCRIPTS_H__ */

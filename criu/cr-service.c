@@ -50,7 +50,7 @@
 
 unsigned int service_sk_ino = -1;
 
-static int recv_criu_msg(int socket_fd, CriuReq **req)
+static int recv_criu_msg_with_fd(int socket_fd, CriuReq **req, int *fd)
 {
 	u8 local[PB_PKOBJ_LOCAL_SIZE];
 	void *buf = (void *)&local;
@@ -68,16 +68,27 @@ static int recv_criu_msg(int socket_fd, CriuReq **req)
 			return -ENOMEM;
 	}
 
-	len = recv(socket_fd, buf, len, MSG_TRUNC);
-	if (len == -1) {
-		pr_perror("Can't read request");
-		goto err;
-	}
+	if (fd) {
+		int ret = __recv_fds(socket_fd, fd, 1, buf, len, 0);
 
-	if (len == 0) {
-		pr_info("Client exited unexpectedly\n");
-		errno = ECONNRESET;
-		goto err;
+		if (ret < 0) {
+			errno = -ret;
+			pr_pwarn("Receiving fds failed");
+			goto err;
+		}
+	} else {
+		int ret = recv(socket_fd, buf, len, MSG_TRUNC);
+
+		if (ret == -1) {
+			pr_perror("Can't read request");
+			goto err;
+		}
+
+		if (ret == 0) {
+			pr_info("Client exited unexpectedly\n");
+			errno = ECONNRESET;
+			goto err;
+		}
 	}
 
 	*req = criu_req__unpack(NULL, len, buf);
@@ -91,6 +102,11 @@ err:
 	if (buf != (void *)&local)
 		xfree(buf);
 	return exit_code;
+}
+
+static int recv_criu_msg(int socket_fd, CriuReq **req)
+{
+	return recv_criu_msg_with_fd(socket_fd, req, NULL);
 }
 
 static int send_criu_msg_with_fd(int socket_fd, CriuResp *msg, int fd)
@@ -196,16 +212,37 @@ int send_criu_restore_resp(int socket_fd, bool success, int pid)
 	return send_criu_msg(socket_fd, &msg);
 }
 
-int send_criu_rpc_script(enum script_actions act, char *name, int sk, int fd)
+int send_criu_rpc_script_cn(CriuNotify *cn, int sk, int send_fd, int *receive_fd)
 {
 	int ret;
 	CriuResp msg = CRIU_RESP__INIT;
 	CriuReq *req;
-	CriuNotify cn = CRIU_NOTIFY__INIT;
 
 	msg.type = CRIU_REQ_TYPE__NOTIFY;
 	msg.success = true;
-	msg.notify = &cn;
+	msg.notify = cn;
+
+	ret = send_criu_msg_with_fd(sk, &msg, send_fd);
+	if (ret < 0)
+		return ret;
+
+	ret = recv_criu_msg_with_fd(sk, &req, receive_fd);
+	if (ret < 0)
+		return ret;
+
+	if (req->type != CRIU_REQ_TYPE__NOTIFY || !req->notify_success) {
+		pr_err("RPC client reported script error\n");
+		return -1;
+	}
+
+	criu_req__free_unpacked(req, NULL);
+	return 0;
+}
+
+int send_criu_rpc_script(enum script_actions act, char *name, int sk, int fd)
+{
+	CriuNotify cn = CRIU_NOTIFY__INIT;
+
 	cn.script = name;
 
 	switch (act) {
@@ -223,21 +260,7 @@ int send_criu_rpc_script(enum script_actions act, char *name, int sk, int fd)
 		break;
 	}
 
-	ret = send_criu_msg_with_fd(sk, &msg, fd);
-	if (ret < 0)
-		return ret;
-
-	ret = recv_criu_msg(sk, &req);
-	if (ret < 0)
-		return ret;
-
-	if (req->type != CRIU_REQ_TYPE__NOTIFY || !req->notify_success) {
-		pr_err("RPC client reported script error\n");
-		return -1;
-	}
-
-	criu_req__free_unpacked(req, NULL);
-	return 0;
+	return send_criu_rpc_script_cn(&cn, sk, fd, NULL);
 }
 
 int exec_rpc_query_external_files(char *name, int sk)
