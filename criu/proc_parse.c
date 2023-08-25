@@ -398,9 +398,14 @@ static int vma_open_mapfile(pid_t pid, int dir, const char *fname, struct vma_ar
 		 */
 		flags = O_RDONLY;
 
-	*vm_file_fd = openat(dir, path, flags);
-	if (*vm_file_fd >= 0)
-		return 0;
+	if (!fault_injected(FI_EPERM_MAPFILES)) {
+		*vm_file_fd = openat(dir, path, flags);
+		if (*vm_file_fd >= 0)
+			return 0;
+	} else {
+		*vm_file_fd = -1;
+		errno = EPERM;
+	}
 
 	if (errno == ENOENT)
 		/* Just mapping w/o map_files link */
